@@ -1,0 +1,39 @@
+ 
+
+
+
+% a
+cab
+b
+\
+
+
+P
+ur
+p
+
+o
+
+se:  
+This is a wrapper function that will streamline the running of the attention distractor experiment.
+
+function doExp(subj,whichSession,eyetracking)
+addpath('../anal');
+
+if ~exist('eyetracking','var')
+   eyetracking = 1;
+end
+
+switch whichSession
+   case 0
+      % thresholding session
+      runTask(subj,whichSession,0,eyetracking);
+      % get initial threshold estimates
+      viewPsi(subj,0,1);
+
+      % verify thresholds
+      runTask(subj,whichSession,1,eyetracking);
+   case 1
+      % main experiment
+      runTask(subj,whichSession,0,eyetracking);
+end

@@ -1,0 +1,14 @@
+This document keeps track of the counterbalancing (or the attempt to counterbalance) the order of exogenous and endogenous tasks for each subject.
+
+AB       Exo --> Endo
+AF       Exo --> Endo
+MJ       Exo --> Endo
+SX       Exo --> Endo
+LH       Exo --> Endo
+RF       Exo --> Endo
+
+SC       Endo --> Exo
+LS       Endo --> Exo
+AS       Endo --> Exo
+SJ       Endo --> Exo (WILL NOT INCLUDE…did not use cue)
+GP	 Endo —-> Exo (WILL USE LONGER CUE DISPLAY TIME)

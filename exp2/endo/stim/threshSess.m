@@ -1,0 +1,501 @@
+% Purpose: Estimate contrast threshold using psi method
+
+% Purpose: Estimate contrast threshold using up-down staircase. There will be 4 grating stimuli on the screen at each time in order
+%          to equate the influence of distractors.
+
+function threshSess(myscreen)
+global stimulus
+
+%% Set up task variable for MGL
+task{1}.seglen = stimulus.taskParams.duration;
+task{1}.getResponse = stimulus.taskParams.getResponse;
+task{1}.parameter = removeFields(stimulus.taskParams,{'duration' 'getResponse' 'nTrials' 'allParams' 'nBlocks' 'startContrast' 'psiM' 'paramNames'});
+task{1}.random = 1;
+task{1}.numTrials = stimulus.taskParams.nTrials;
+task{1}.waitForBacktick = 0;
+% the tilt of the Gabor will be randomly determined on each trial
+task{1}.randVars.uniform.tilt = [-1 1]; % -1 = CCW; 1 = CW;
+
+
+%% Variable for broken fixations
+stimulus.brokenTrial = [];
+stimulus.brokenTrial.orgNumTrials = task{1}.numTrials;
+stimulus.brokenTrial.trialIdx = [];
+
+
+%% Variables to store accuracy and the parameters tested on each trial
+stimulus.accuracy = [];
+stimulus.contrast = [];
+
+% initialize strucutre to hold parameters on each trial
+paramNames = stimulus.taskParams.paramNames;
+for p = 1:length(paramNames)
+   stimulus.(paramNames{p}) = [];
+end
+
+%% Display task instructions
+taskInstructions
+
+
+%% Run tasks
+[task{1}, myscreen] = initTask(task{1},myscreen,@startSegmentCallback,@screenUpdateCallback,@trialResponseCallback,@startTrialCallback,@endTrialCallback);
+tnum = 1;
+while (tnum<=length(task))
+   [task, myscreen, tnum] = updateTask(task,myscreen,tnum);
+   myscreen = tickScreen(myscreen,task);
+end
+
+
+%% Save stimfile
+mglClearScreen; mglFlush; mglClearScreen;
+perf = nanmean(stimulus.accuracy);
+mglTextDraw(sprintf('%.0f%% accuracy',perf*100),[0 1]);
+mglTextDraw('Give your eyes a short rest',[0 0]);
+mglWaitSecs(1);
+mglFlush;
+mglWaitSecs(1.5);
+
+% remove staircase structure from stimulus variable and then save
+stair = stimulus.stair;
+stimulus.stair = [];
+save([myscreen.datadir,'stair.mat'],'stair','stimulus');
+
+% end task
+endTask(myscreen,task);
+
+% put staircase structure back into stimulus variable
+stimulus.stair = stair;
+
+
+
+%% startTrial
+function [task, myscreen] = startTrialCallback(task,myscreen)
+global stimulus
+
+% initialize index for whether the trial is broken or not
+stimulus.brokenTrial.trialIdx(task.trialnum) = 0;
+% re-initialize break counter
+stimulus.eyeParams.breakCounter = 0;
+
+
+% create target gabor
+[~,thisSF] = ismember(task.thistrial.sfs,task.parameter.sfs);
+[~,thisEcc] = ismember(task.thistrial.ecc,task.parameter.ecc);
+
+% determine which staricase to use
+thisStair = stimulus.stair(thisEcc,thisSF,task.thistrial.stairStart);
+
+% transform contrast from log to linear units
+c = min(10^thisStair.currentLevel,1);
+
+% store contrast level
+stimulus.contrast(task.trialnum) = c;
+
+% generate target Gabor stimulus for this trial
+gaborSize = stimulus.stimParams.gabor.size;
+gr = c*mglMakeGrating(gaborSize,gaborSize,task.thistrial.sfs,...
+   90-(stimulus.stimParams.gabor.tiltMagnitude*task.thistrial.tilt),180);
+window = raisedCosWindow_mgl(gaborSize,gaborSize,gaborSize,gaborSize);
+gabor = 255*(gr.*window+1)/2;
+stimulus.target = mglCreateTexture(gabor);
+
+% create distractors
+% distractor at same eccentricity, but opposite hemifield
+distractTilt = rand(1)>0.5;
+if distractTilt
+   % CW
+   distractTilt = 1;
+else
+   distractTilt = -1;
+end
+gr = c*mglMakeGrating(gaborSize,gaborSize,task.thistrial.sfs,...
+   90-(stimulus.stimParams.gabor.tiltMagnitude*distractTilt),180);
+window = raisedCosWindow_mgl(gaborSize,gaborSize,gaborSize,gaborSize);
+gabor = 255*(gr.*window+1)/2;
+stimulus.distractor = mglCreateTexture(gabor);
+
+% distractors at different eccentricity
+% generate distractor gratings; distractors will be presented at remaining eccentricities in both hemifields
+% first, create matrix of possible target locations [hemifield; ecc]
+distLoc = [ones(1,numel(stimulus.taskParams.ecc))*-1 ones(1,numel(stimulus.taskParams.ecc)); ...
+   fliplr(stimulus.taskParams.ecc) stimulus.taskParams.ecc];
+distLoc = distLoc(:,~all(ismember(distLoc,[task.thistrial.loc; task.thistrial.ecc])));
+[~,distEccIdx] = ismember(distLoc(2,:),stimulus.taskParams.ecc);
+% randomize tilts of distractors
+distTilts = rand(1,numel(distEccIdx)); tmp = distTilts; tmp(distTilts<0.5) = -1; tmp(distTilts>=0.5) = 1;
+distTilts = tmp;
+   
+% contrast for the distractors at the other eccentricity will be the opposite of the target eccentricity contrast 
+% if close eccentricity is the target and is of low contrast then far eccentricity distractor will be of high contrast
+otherEccContrast = setdiff(stimulus.taskParams.stairStart,task.thistrial.stairStart);
+otherEcc = find(~ismember(stimulus.taskParams.ecc,task.thistrial.ecc));
+for e = 1:numel(distEccIdx)
+    if distEccIdx(e)==thisEcc
+        contrastLevel = min(10^thisStair.currentLevel,1);
+    else
+        thisDist = stimulus.stair(distEccIdx(e),thisSF,otherEccContrast);
+        contrastLevel = min(10^thisDist.currentLevel,1);
+    end
+    distC(e) = contrastLevel;
+end
+   
+% generate distractor gratings
+for i = 1:numel(distC)
+   gr = distC(i)*mglMakeGrating(gaborSize,gaborSize,stimulus.taskParams.sfs(thisSF),...
+      90-(stimulus.stimParams.gabor.tiltMagnitude*distTilts(i)),180);
+   window = raisedCosWindow_mgl(gaborSize,gaborSize,gaborSize,gaborSize);
+   gabor = 255*(gr.*window+1)/2;
+   stimulus.distractors(i) = mglCreateTexture(gabor);
+end
+
+% store location and eccentricity of each distractor for ease of presentation
+stimulus.thistrial.distLoc = distLoc;
+
+
+%% startSegment
+function [task, myscreen] = startSegmentCallback(task,myscreen)
+global stimulus
+
+% initialize fixation tracker or recalibrate the eyetracker
+if myscreen.eyetracker.init
+   switch task.thistrial.thisseg
+      case 1 % mandatory fixation period
+         % initialize matrix that will hold the x and y eye positions during the 
+         % fixation period
+         stimulus.eyeParams.fixPos = [];
+
+         % if the trial was broken (due to eye postions outside the fixation window),
+         % recalibrate the eyetracker
+         if stimulus.eyeParams.recalibrate
+            myscreen = eyeCalibDisp(myscreen,...
+               'Ask experimenter to re-calibrate eyetracker');
+            stimulus.eyeParams.recalibrate = 0;
+            stimulus.eyeParams.fixPos = [0 0];
+            mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity); mglFlush
+            mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity); mglFlush
+            mglWaitSecs(1);
+         end
+      case 2 % drift-check period
+         % compute average eye position during fixation period (i.e., segment 1)
+         avgPos = nanmean(stimulus.eyeParams.fixPos,1);
+
+         % calculate distance of average eye position to the fixation point
+         % NOTE: by default, stimulus.eyeParams.fixRef = [0 0]. on most trials it will
+         % equal the average eye position during the mandatory fixation period
+         if calcDistance(avgPos,stimulus.eyeParams.fixRef)<=stimulus.eyeParams.fixWindow
+            % perform automatic drift correction (i.e., use avg position as new fixation point)
+            stimulus.eyeParams.fixRef = avgPos;
+            stimulus.eyeParams.driftCorrect = 0;
+         else
+            % reset the fixation reference point and have the subject recalibrate
+            stimulus.eyeParams.fixRef = [0 0];
+            stimulus.eyeParams.fixPos = [];
+            stimulus.eyeParams.driftCorrect = 1;
+            stimulus.eyeParams.waitTime = mglGetSecs;
+         end
+   end
+end
+
+% events that occur regardless of eyetracking
+switch task.thistrial.thisseg
+   case 8 % after response period
+      if task.thistrial.thisseg==8 && ~task.thistrial.gotResponse
+         % display message to respond in time
+         mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity);
+         mglTextDraw('Please respond in time',[0 0]); mglFlush;
+         mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity);
+         mglTextDraw('Please respond in time',[0 0]); mglFlush;
+
+         % re-do the trial at end of block
+         stimulus.brokenTrial.trialIdx(task.trialnum) = 1;
+         mglWaitSecs(0.5);
+         task = jumpSegment(task);
+      elseif task.thistrial.gotResponse
+         task = jumpSegment(task);
+      end
+end
+
+
+%% screenUpdate
+function [task, myscreen] = screenUpdateCallback(task,myscreen)
+global stimulus
+mglClearScreen
+
+% initialize tracking
+if myscreen.eyetracker.init
+   eyePos = mglEyelinkGetCurrentEyePos;
+   eyeDist = calcDistance(eyePos,stimulus.eyeParams.fixRef);
+end
+
+
+% draw fixation with the given intensity
+drawFixation(stimulus.stimParams.fixation.intensity)
+
+
+% draw stimuli for each segment
+switch task.thistrial.thisseg
+   case 1 % fixation
+      % collect eye position during fixation for use during drift correct
+      if myscreen.eyetracker.init
+         stimulus.eyeParams.fixPos = [stimulus.eyeParams.fixPos; eyePos];
+      end
+   case 2 % drift-correction
+      switch myscreen.eyetracker.init
+         case 1
+            if stimulus.eyeParams.driftCorrect
+               % check whether the subject has fixated within the fixation window for
+               % an acceptable period of time (by default: recalibWaitTime = 0.5s)
+               if mglGetSecs(stimulus.eyeParams.waitTime)>=stimulus.eyeParams.recalibWaitTime
+                  stimulus.eyeParams.recalibrate = 1;
+                  % break trial in order to initiate calibration procedure
+                  stimulus.brokenTrial.trialIdx(task.trialnum) = 1;
+                  mglWaitSecs(1);
+                  task = jumpSegment(task,inf);
+               end
+
+               % start timer that keeps track of how long the eye has been at fixation
+               goodFix = 0;
+               if eyeDist<=stimulus.eyeParams.fixWindow
+                  goodFix = 1;
+                  fixStart = mglGetSecs;
+               end
+
+               % store eye position and use average as reference when fixation time window is exceeded
+               while goodFix
+                  fixTime = mglGetSecs(fixStart);
+                  stimulus.eyeParams.fixPos = [stimulus.eyeParams.fixPos eyePos];
+                  if fixTime>=stimulus.eyeParams.fixTime
+                     stimulus.eyeParams.fixRef = nanmean(stimulus.eyeParams.fixPos,1);
+
+                     % remove text, give a short pause, then continue with experiment
+                     mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity);
+                     mglFlush; mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity); mglFlush;
+                     mglWaitSecs(0.5);
+                     task = jumpSegment(task);
+                     break
+                  end
+               end
+            else
+               task = jumpSegment(task);
+            end
+         otherwise
+            task = jumpSegment(task);
+      end
+    case 3 % cue
+        % neutral cue -- lines
+        cueParams = stimulus.stimParams.endoCue;
+        mglLines2(cueParams.x(1),cueParams.y(1),cueParams.x(2),cueParams.y(2),...
+            cueParams.size,cueParams.intensity);
+        mglLines2(-cueParams.x(1),cueParams.y(1),-cueParams.x(2),cueParams.y(2),...
+            cueParams.size,cueParams.intensity);
+        
+        % neutral cue -- number
+        cueNum = 'N';
+        mglTextDraw(cueNum,[0 cueParams.y(1)]);
+   case 5 % stimulus
+      % target
+      mglBltTexture(stimulus.target,[task.thistrial.ecc*task.thistrial.loc 0]);
+      drawFixation(stimulus.stimParams.fixation.intensity);
+
+      % distractors
+      xEcc = stimulus.thistrial.distLoc(1,:).*stimulus.thistrial.distLoc(2,:);
+      yEcc = zeros(1,numel(xEcc));
+      mglBltTexture(stimulus.distractors,[xEcc' yEcc']);
+
+      drawFixation(stimulus.stimParams.fixation.intensity);
+   case 7 % response cue
+      cueLoc = repmat(task.thistrial.ecc*task.thistrial.loc,1,2);
+      elevation = stimulus.stimParams.cue.elevation;
+      mglFillOval(cueLoc,elevation,repmat(stimulus.stimParams.cue.radius,1,2),...
+         stimulus.stimParams.cue.color);
+end
+
+% implement gaze-contingency
+if myscreen.eyetracker.init && ~any(task.thistrial.thisseg==[1 2 7 8 9])
+   if eyeDist>stimulus.eyeParams.fixWindow
+      stimulus.eyeParams.breakCounter = stimulus.eyeParams.breakCounter+1;
+   else
+      stimulus.eyeParams.breakCounter = 0;
+   end
+
+   % break trial condition
+   if stimulus.eyeParams.breakCounter>=stimulus.eyeParams.frames2Break
+      stimulus.brokenTrial.trialIdx(task.trialnum) = 1;
+      % pause task to make sure subject is ready for next trial
+      mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity);
+      mglTextDraw('Please fixate',[0 0]);
+      mglFlush; mglClearScreen; drawFixation(stimulus.stimParams.fixation.intensity);
+      mglTextDraw('Please fixate',[0 0]); mglFlush;
+      % play sound for broken fixation
+      mglPlaySound('Submarine');
+      mglWaitSecs(0.5);
+      task = jumpSegment(task,inf);
+   end
+end
+
+
+%% trialResponse
+function [task, myscreen] = trialResponseCallback(task,myscreen)
+global stimulus
+
+% determine accuracy
+correct = 0;
+resp = find(task.thistrial.buttonState); % 1=CCW; 2=CW
+
+% break trial if two response buttons are pressed
+if length(resp)>1
+   stimulus.brokenTrial.trialIdx(task.trialnum) = 1;
+   mglClearScreen; mglTextDraw('Please respond with one key',[0 0]);
+   mglFlush; mglClearScreen;
+   mglTextDraw('Please respond with one key',[0 0]); mglFlush;
+   mglWaitSecs(0.5);
+else
+   % record and update psi method if one response key was pressed
+   if resp==1 && task.thistrial.tilt==-1
+      correct = 1; % CCW tilt, CCW response
+   elseif resp==2 && task.thistrial.tilt==1
+      correct = 1; % CW tilt, CW response
+   end
+
+   % get the indices for the current condition
+   [~,thisSF] = ismember(task.thistrial.sfs,task.parameter.sfs);
+   [~,thisEcc] = ismember(task.thistrial.ecc,task.parameter.ecc);
+   thisStair = stimulus.stair(thisEcc,thisSF,task.thistrial.stairStart);
+   
+   % store accuracy
+   stimulus.accuracy(task.trialnum) = correct;
+   % store contrast value
+   stimulus.contrast(task.trialnum) = thisStair.currentLevel;
+
+   % update staircase
+   stimulus.stair(thisEcc,thisSF,task.thistrial.stairStart) = nDown1Up(thisStair,correct);
+
+   % feedback
+   if ~correct
+      mglPlaySound(stimulus.stimParams.feedbackSound);
+   end
+end
+
+% go to next trial
+task = jumpSegment(task);
+
+%% endTrialCallback
+function [task, myscreen] = endTrialCallback(task,myscreen)
+global stimulus
+
+% store the parameters that were presented in this trial
+paramNames = stimulus.taskParams.paramNames;
+for p = 1:length(paramNames)
+   stimulus.(paramNames{p})(task.trialnum) = task.thistrial.(paramNames{p});
+end
+
+% do necessary adjustments if the trial was broken
+if stimulus.brokenTrial.trialIdx(task.trialnum)
+   % update accuracy and contrast
+   stimulus.accuracy(task.trialnum) = nan;
+   stimulus.contrast(task.trialnum) = nan;
+
+    % keep track of the parameters on this trial and then move on to the next trial
+    parameters = fieldnames(task.block(task.blocknum).parameter);
+    for p = 1:length(parameters)
+        if ~isfield(stimulus.brokenTrial,parameters{p})
+            stimulus.brokenTrial.(parameters{p}) = [];
+        end
+        stimulus.brokenTrial.(parameters{p})(end+1) = ...
+            task.block(task.blocknum).parameter.(parameters{p})(task.blockTrialnum);
+    end
+    
+    % add a trial to the end of the block
+    task.numTrials = task.numTrials+1;
+end
+
+% if we've reached the end of the original number of trials, start presenting trial
+% that need to be re-done
+if task.trialnum>=stimulus.brokenTrial.orgNumTrials
+    parameters = fieldnames(task.block(task.blocknum).parameter);
+    
+    % if just done with the original trials, then update the block info to show a
+    % division between original and re-done trials
+    if task.trialnum==stimulus.brokenTrial.orgNumTrials
+        task.block(task.blocknum).trialn = task.blockTrialnum;
+        
+        % make a new block for the re-done trials
+        if isfield(stimulus.brokenTrial,(parameters{1}))
+            task.blocknum = task.blocknum+1;
+            task.block(task.blocknum).trialn = inf;
+            task.blockTrialnum = 0;
+        end
+    end
+    
+    % update block field to reflect trials that will be re-done
+    if task.block(task.blocknum).trialn==inf && ~isempty(stimulus.brokenTrial.(parameters{1}))
+        for p = 1:length(parameters)
+            % replace block field with parameters of the trial that needs to be re-done
+            if ~isfield(task.block(task.blocknum).parameter,parameters{p})
+                task.block(task.blocknum).parameter.(parameters{p}) = [];
+            end
+            task.block(task.blocknum).parameter.(parameters{p}) = ...
+                [task.block(task.blocknum).parameter.(parameters{p}) stimulus.brokenTrial.(parameters{p})];
+            
+            % clear that trial, showing that it has been re-done
+            stimulus.brokenTrial.(parameters{p}) = [];
+        end
+    end
+end
+
+%% Helper functions
+function drawFixation(intensity)
+global stimulus
+
+% make sure intensity is a 1x3 vector
+if length(intensity)==1
+   intensity = repmat(intensity,1,3);
+end
+
+% draw fixation cross
+x = stimulus.stimParams.fixation.x;
+y = stimulus.stimParams.fixation.y;
+fixSize = stimulus.stimParams.fixation.size;
+mglLines2(zeros(1,length(x)),zeros(1,length(y)),x,y,fixSize,intensity);
+
+
+function taskInstructions
+global stimulus
+
+ready = 0;
+mglWaitSecs(0.1);
+while ~ready
+   mglClearScreen
+
+   drawFixation(stimulus.stimParams.fixation.intensity);
+
+   mglTextDraw('Press any key when ready',[0 -3.5]);
+   mglTextDraw('Please keep your eyes on the X',[0 -4.5]);
+   
+   eccNums = {'2' '1' '1' '2'};
+   eccs = [-6 -2 2 6];
+   for e = 1:numel(eccs)
+       mglTextDraw(eccNums{e},[eccs(e) 0]);
+   end
+
+   % draw Gabors of each tested SF
+   mglTextDraw('TARGETS',[0 6]);
+   maxEcc = 8;
+   gaborPos = linspace(-maxEcc,maxEcc,numel(1:2:length(stimulus.taskParams.sfs)));
+   sfIdx = 1:2:numel(stimulus.taskParams.sfs);
+   for s = 1:numel(1:2:length(stimulus.taskParams.sfs))
+      thisSF = stimulus.taskParams.sfs(sfIdx(s));
+      gaborSize = stimulus.stimParams.gabor.size;
+      gr = mglMakeGrating(gaborSize,gaborSize,thisSF,90,180);
+      window = raisedCosWindow_mgl(gaborSize,gaborSize,gaborSize,gaborSize);
+      gabor = 255*(gr.*window+1)/2;
+      target = mglCreateTexture(gabor);
+      mglBltTexture(target,[gaborPos(s) 3.5]);
+   end
+   mglFlush
+
+   % wait for key press
+   if any(mglGetKeys)
+      ready = 1;
+   end
+end

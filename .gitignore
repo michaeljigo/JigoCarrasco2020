@@ -1,0 +1,6 @@
+# gitignore
+
+*stim*.mat
+*.edf
+*demographic*
+manuscript/
